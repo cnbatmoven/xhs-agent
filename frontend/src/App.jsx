@@ -136,6 +136,9 @@ export default function App() {
         ]);
         if (!alive) return;
         setHealth(healthData);
+        if (healthData.llm_configured === false) {
+          setWork((current) => (current.use_llm ? { ...current, use_llm: false } : current));
+        }
         setJobs(jobData);
         setFiles(fileData);
         setPlugins(pluginData);
