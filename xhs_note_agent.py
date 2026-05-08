@@ -2013,7 +2013,9 @@ def embed_cover_images(ws: Any, results: list[NoteResult], cover_col: int, start
             scale = min(thumb_px / width, thumb_px / height)
             image.width = int(width * scale)
             image.height = int(height * scale)
-            ws.add_image(image, ws.cell(row=row_idx, column=cover_col).coordinate)
+            cell = ws.cell(row=row_idx, column=cover_col)
+            cell.value = ""
+            ws.add_image(image, cell.coordinate)
             ws.row_dimensions[row_idx].height = max(ws.row_dimensions[row_idx].height or 15, 95)
         except Exception as exc:
             ws.cell(row=row_idx, column=cover_col).value = f"{result.cover} (embed failed: {exc})"

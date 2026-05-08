@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.styles import Alignment, Font, PatternFill
 
 
@@ -185,7 +186,12 @@ def merge_rows(
     return merged
 
 
-def write_result_table(columns: list[str], rows: list[dict[str, str]], output_path: Path) -> None:
+def write_result_table(
+    columns: list[str],
+    rows: list[dict[str, str]],
+    output_path: Path,
+    embed_covers: bool = True,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path = output_path.with_suffix(".csv")
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -207,9 +213,86 @@ def write_result_table(columns: list[str], rows: list[dict[str, str]], output_pa
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
+    widths = {
+        "标题": 34,
+        "笔记链接": 46,
+        "封面": 24 if embed_covers else 40,
+        "文案": 60,
+        "话题": 30,
+        "达人昵称": 18,
+        "达人ID": 22,
+        "达人链接": 42,
+        "评论区前20条": 60,
+        "蒲公英链接": 42,
+        "蒲公英图文报价": 16,
+        "蒲公英视频报价": 16,
+        "图文CPE": 14,
+        "视频CPE": 14,
+        "创意建议": 60,
+        "人群圈选策略": 60,
+        "LLM状态": 26,
+        "LLM模型": 22,
+        "异常信息": 36,
+    }
+    for col_idx, header in enumerate(columns, start=1):
+        letter = sheet.cell(row=1, column=col_idx).column_letter
+        sheet.column_dimensions[letter].width = widths.get(header, 16)
+    if embed_covers and "封面" in columns:
+        embed_cover_images(
+            sheet,
+            rows,
+            cover_col=columns.index("封面") + 1,
+            start_row=2,
+            converted_dir=output_path.parent / "embedded_covers",
+        )
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     workbook.save(output_path)
+
+
+def embed_cover_images(
+    sheet: Any,
+    rows: list[dict[str, str]],
+    cover_col: int,
+    start_row: int,
+    converted_dir: Path,
+) -> None:
+    thumb_px = 120
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    for offset, row in enumerate(rows):
+        row_idx = start_row + offset
+        cover_path = Path(str(row.get("封面", "") or ""))
+        if not cover_path.exists() or not cover_path.is_file():
+            continue
+        try:
+            image_path = prepare_excel_image_path(cover_path, converted_dir)
+            image = ExcelImage(str(image_path))
+            width = image.width or thumb_px
+            height = image.height or thumb_px
+            scale = min(thumb_px / width, thumb_px / height)
+            image.width = int(width * scale)
+            image.height = int(height * scale)
+            cell = sheet.cell(row=row_idx, column=cover_col)
+            cell.value = ""
+            sheet.add_image(image, cell.coordinate)
+            sheet.row_dimensions[row_idx].height = max(sheet.row_dimensions[row_idx].height or 15, 95)
+        except Exception as exc:
+            sheet.cell(row=row_idx, column=cover_col).value = f"{row.get('封面', '')} (embed failed: {exc})"
+
+
+def prepare_excel_image_path(path: Path, converted_dir: Path) -> Path:
+    if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".gif"}:
+        return path
+    from PIL import Image
+
+    target = converted_dir / f"{path.stem}.png"
+    if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
+        return target
+    with Image.open(path) as img:
+        if img.mode not in {"RGB", "RGBA"}:
+            img = img.convert("RGBA")
+        img.save(target, "PNG")
+    return target
 
 
 def merge_retry_results(base_csv_path: Path, retry_csv_path: Path, merged_output_path: Path) -> dict[str, Any]:
