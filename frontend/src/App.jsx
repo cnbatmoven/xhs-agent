@@ -22,7 +22,7 @@ import { Dot, Ico, Kbd, Num, Pill, btnIcon, btnPrimary } from './ui.jsx';
 
 const defaultWork = {
   input: '',
-  description: '抓取这张表前50条笔记，补充标题、封面、文案、话题、互动数据、评论、粉丝量，并用LLM生成创意建议和人群圈选策略。',
+  description: '抓取这张表前50条笔记，补充标题、封面、文案、话题、互动数据、评论和粉丝量。',
   limit: 50,
   cdp_url: 'http://127.0.0.1:9222',
   crawl_delay: 8,
@@ -422,7 +422,7 @@ export default function App() {
               value={work.description}
               onChange={(e) => update('description', e.target.value)}
               style={textareaStyle}
-              placeholder="例如：只抓前50条，慢速跑，补评论和粉丝量，用LLM生成丰富创意建议。"
+              placeholder="例如：只抓前50条，慢速跑，补评论和粉丝量。"
             />
           </section>
 

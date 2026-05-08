@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,24 +13,6 @@ from .state import JobState
 
 def _log(state: JobState, message: str) -> list[str]:
     return [*state.get("logs", []), message]
-
-
-def _bool_from_desc(description: str, words: list[str]) -> bool:
-    lowered = description.lower()
-    return any(word.lower() in lowered for word in words)
-
-
-def _extract_limit(description: str, fallback: int) -> int:
-    patterns = [
-        r"前\s*(\d+)\s*条",
-        r"limit\s*(\d+)",
-        r"top\s*(\d+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, description, flags=re.I)
-        if match:
-            return int(match.group(1))
-    return fallback
 
 
 def summarize_csv_file(csv_path: Path) -> dict[str, Any]:
@@ -82,24 +63,14 @@ def csv_preview_file(csv_path: Path, limit: int = 50) -> dict[str, Any]:
 
 
 def parse_intent_node(state: JobState) -> JobState:
-    description = state.get("description", "")
     params = dict(state.get("params", {}))
-    params["limit"] = _extract_limit(description, int(params.get("limit") or 0))
-    if _bool_from_desc(description, ["慢速", "慢一点", "安全", "风控"]):
-        params["crawl_delay"] = max(float(params.get("crawl_delay") or 0), 10)
-    if _bool_from_desc(description, ["蒲公英", "报价", "cpe"]):
-        params["crawl_pgy"] = True
-        params["pgy_safe_mode"] = True
-        params["pgy_delay"] = max(float(params.get("pgy_delay") or 0), 12)
-    if _bool_from_desc(description, ["llm", "deepseek", "创意建议", "人群", "策略", "丰富分析"]):
-        params["use_llm"] = True
-    if _bool_from_desc(description, ["离线", "不抓", "不重新抓"]):
-        params["no_crawl"] = True
+    # The UI sends explicit execution settings; the free-text description is
+    # saved for humans and must not silently enable risky/paid features.
     return {
         **state,
         "params": params,
         "current_step": "parse_intent",
-        "logs": _log(state, "parse_intent: generated execution parameters"),
+        "logs": _log(state, "parse_intent: using explicit execution parameters"),
     }
 
 
