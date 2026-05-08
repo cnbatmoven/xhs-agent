@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { T } from './tokens.js';
 import {
+  clearFinishedJobs,
   createBatch,
   createJob,
   createRetryJobsFromScan,
+  deleteJob,
   fileUrl,
   createRetryJob,
   getHealth,
@@ -138,7 +140,9 @@ export default function App() {
         setFiles(fileData);
         setPlugins(pluginData);
         setQualityScan(qualityScanData);
-        if (!activeJobId && jobData.length > 0) {
+        if (jobData.length === 0) {
+          setActiveJobId('');
+        } else if (!activeJobId || !jobData.some((job) => job.job_id === activeJobId)) {
           setActiveJobId(jobData[0].job_id);
         }
       } catch (err) {
@@ -184,6 +188,10 @@ export default function App() {
         }
       } catch (err) {
         if (!alive) return;
+        if (normalizeError(err).includes('job not found')) {
+          setActiveJobId('');
+          return;
+        }
         setError(normalizeError(err));
       }
     }
@@ -237,6 +245,10 @@ export default function App() {
       setError('请先上传或填写一个 Excel 文件。');
       return;
     }
+    if (work.use_llm && health.llm_configured === false) {
+      setError('后端没有配置 LLM_API_KEY / OPENAI_API_KEY。请先关闭“启用 LLM”，或者配置 API Key 后重启后端。');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -254,6 +266,10 @@ export default function App() {
   async function submitBatch() {
     if (!work.input) {
       setError('请先上传或填写一个 Excel 文件。');
+      return;
+    }
+    if (work.use_llm && health.llm_configured === false) {
+      setError('后端没有配置 LLM_API_KEY / OPENAI_API_KEY。请先关闭“启用 LLM”，或者配置 API Key 后重启后端。');
       return;
     }
     setBusy(true);
@@ -330,6 +346,47 @@ export default function App() {
     }
   }
 
+  async function handleDeleteJob(jobId) {
+    const job = jobs.find((item) => item.job_id === jobId);
+    if (job?.status === 'queued' || job?.status === 'running') {
+      setError('运行中或排队中的任务不能删除，请等任务结束后再删。');
+      return;
+    }
+    if (!window.confirm('删除这条任务记录？输出文件会保留。')) return;
+    setError('');
+    try {
+      await deleteJob(jobId);
+      const nextJobs = await listJobs();
+      setJobs(nextJobs);
+      if (activeJobId === jobId) {
+        setActiveJobId(nextJobs[0]?.job_id || '');
+        setActiveJob(null);
+        setPreview({ columns: [], rows: [] });
+        setQuality(null);
+      }
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  }
+
+  async function handleClearHistory() {
+    if (!window.confirm('清理所有已完成/失败的任务记录？运行中的任务和输出文件会保留。')) return;
+    setError('');
+    try {
+      await clearFinishedJobs();
+      const nextJobs = await listJobs();
+      setJobs(nextJobs);
+      if (!nextJobs.some((job) => job.job_id === activeJobId)) {
+        setActiveJobId(nextJobs[0]?.job_id || '');
+        setActiveJob(null);
+        setPreview({ columns: [], rows: [] });
+        setQuality(null);
+      }
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  }
+
   function update(key, value) {
     setWork((current) => ({ ...current, [key]: value }));
   }
@@ -337,16 +394,21 @@ export default function App() {
   const tone = statusTone(activeJob?.status);
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '250px 440px 1fr', height: '100vh', background: T.bg0, color: T.fg0 }}>
+    <div style={appShellStyle}>
       <aside style={sideStyle}>
         <div style={sideHeaderStyle}>
           <div>
             <div style={labelStyle}>xhs agent</div>
             <div style={titleStyle}>任务队列</div>
           </div>
-          <button style={btnIcon} title="刷新" onClick={() => window.location.reload()}>
-            <Ico.search />
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button type="button" style={btnIcon} title="清理已完成/失败任务" onClick={handleClearHistory}>
+              <Ico.trash />
+            </button>
+            <button type="button" style={btnIcon} title="刷新" onClick={() => window.location.reload()}>
+              <Ico.search />
+            </button>
+          </div>
         </div>
 
         <div style={{ padding: 14, borderBottom: `1px solid ${T.br0}` }}>
@@ -359,10 +421,16 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: '10px 8px' }}>
+        <div style={jobListStyle}>
           {jobs.length === 0 && <EmptySmall>还没有任务，先从中间工作台提交一次。</EmptySmall>}
           {jobs.map((job) => (
-            <JobItem key={job.job_id} job={job} active={job.job_id === activeJobId} onClick={() => setActiveJobId(job.job_id)} />
+            <JobItem
+              key={job.job_id}
+              job={job}
+              active={job.job_id === activeJobId}
+              onClick={() => setActiveJobId(job.job_id)}
+              onDelete={() => handleDeleteJob(job.job_id)}
+            />
           ))}
         </div>
 
@@ -456,7 +524,17 @@ export default function App() {
               <Toggle label="嵌入封面" checked={work.embed_covers} onChange={(v) => update('embed_covers', v)} />
               <Toggle label="抓蒲公英" checked={work.crawl_pgy} onChange={(v) => update('crawl_pgy', v)} />
               <Toggle label="蒲公英安全模式" checked={work.pgy_safe_mode} onChange={(v) => update('pgy_safe_mode', v)} />
-              <Toggle label="启用 LLM" checked={work.use_llm} onChange={(v) => update('use_llm', v)} />
+              <Toggle
+                label={health.llm_configured === false ? '启用 LLM（未配置）' : '启用 LLM'}
+                checked={work.use_llm}
+                onChange={(v) => {
+                  if (v && health.llm_configured === false) {
+                    setError('后端没有配置 LLM_API_KEY / OPENAI_API_KEY。配置后重启后端，或保持 LLM 关闭。');
+                    return;
+                  }
+                  update('use_llm', v);
+                }}
+              />
             </div>
           </section>
 
@@ -553,7 +631,7 @@ export default function App() {
           {activeJob && <span style={{ marginLeft: 'auto', color: T.fg4, fontSize: 11, fontFamily: T.mono }}>{prettyTime(activeJob.updated_at)}</span>}
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+        <div style={resultBodyStyle}>
           {!activeJob && <EmptyState />}
           {activeTab === 'scan' && <QualityScanView scan={qualityScan} onOpenJob={setActiveJobId} onRetry={handlePrepareRetry} onRetryAll={handleRetryScan} busy={busy} retryPrep={retryPrep} />}
           {activeJob && activeTab === 'preview' && <PreviewTable preview={preview} />}
@@ -579,17 +657,41 @@ export default function App() {
   );
 }
 
-function JobItem({ job, active, onClick }) {
+function JobItem({ job, active, onClick, onDelete }) {
   const tone = statusTone(job.status);
+  const canDelete = job.status !== 'queued' && job.status !== 'running';
   return (
-    <button onClick={onClick} style={{ ...jobItemStyle, background: active ? T.bg3 : 'transparent' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <strong style={{ fontSize: 12 }}>{job.job_id.slice(0, 8)}</strong>
-        <Pill color={tone.color} bg={tone.bg} br={tone.br}>{job.status}</Pill>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') onClick();
+      }}
+      style={{ ...jobItemStyle, background: active ? T.bg3 : 'transparent' }}
+    >
+      <div style={jobItemHeaderStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          <strong style={{ fontSize: 12 }}>{job.job_id.slice(0, 8)}</strong>
+          <Pill color={tone.color} bg={tone.bg} br={tone.br}>{job.status}</Pill>
+        </div>
+        {canDelete && (
+          <button
+            type="button"
+            title="删除任务记录"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
+            style={deleteButtonStyle}
+          >
+            <Ico.trash />
+          </button>
+        )}
       </div>
-      <div style={{ marginTop: 6, color: T.fg3, fontSize: 11, lineHeight: 1.5 }}>{job.request?.description || job.request?.input || '--'}</div>
+      <div style={jobDescriptionStyle}>{job.request?.description || job.request?.input || '--'}</div>
       <div style={{ marginTop: 5, color: T.fg4, fontSize: 10.5, fontFamily: T.mono }}>{prettyTime(job.created_at)}</div>
-    </button>
+    </div>
   );
 }
 
@@ -860,14 +962,15 @@ function EmptySmall({ children }) {
   return <div style={{ padding: 14, color: T.fg3, fontSize: 12, lineHeight: 1.6 }}>{children}</div>;
 }
 
-const sideStyle = { background: T.bg1, borderRight: `1px solid ${T.br0}`, display: 'flex', flexDirection: 'column', minWidth: 0 };
-const workbenchStyle = { background: T.bg0, borderRight: `1px solid ${T.br0}`, display: 'flex', flexDirection: 'column', minWidth: 0 };
-const resultStyle = { background: T.bg0, display: 'flex', flexDirection: 'column', minWidth: 0 };
+const appShellStyle = { display: 'grid', gridTemplateColumns: '250px 440px minmax(0, 1fr)', height: '100vh', overflow: 'hidden', background: T.bg0, color: T.fg0 };
+const sideStyle = { height: '100vh', overflow: 'hidden', background: T.bg1, borderRight: `1px solid ${T.br0}`, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 };
+const workbenchStyle = { height: '100vh', overflow: 'hidden', background: T.bg0, borderRight: `1px solid ${T.br0}`, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 };
+const resultStyle = { height: '100vh', overflow: 'hidden', background: T.bg0, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 };
 const sideHeaderStyle = { padding: '14px 16px', borderBottom: `1px solid ${T.br0}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
 const mainHeaderStyle = { padding: '14px 16px', borderBottom: `1px solid ${T.br0}`, display: 'flex', alignItems: 'center', gap: 10 };
 const labelStyle = { fontSize: 11, color: T.fg3, fontFamily: T.mono, textTransform: 'uppercase', marginBottom: 7 };
 const titleStyle = { fontSize: 16, fontWeight: 650 };
-const formStyle = { flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
+const formStyle = { flex: 1, minHeight: 0, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelStyle = { background: T.bg2, border: `1px solid ${T.br0}`, borderRadius: 8, padding: 14 };
 const sectionHeaderStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 };
 const sectionTitleStyle = { fontSize: 13, fontWeight: 650, color: T.fg0 };
@@ -887,7 +990,11 @@ const fileLinkStyle = { display: 'flex', justifyContent: 'space-between', gap: 8
 const pluginLineStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, padding: '5px 0', color: T.fg2, fontSize: 11, borderTop: `1px solid ${T.br0}` };
 const retryRowStyle = { padding: '9px 10px', borderRadius: 7, background: T.bg3, border: `1px solid ${T.br0}` };
 const scanCardStyle = { background: T.bg2, border: `1px solid ${T.br0}`, borderRadius: 8, padding: 14 };
-const jobItemStyle = { width: '100%', display: 'block', textAlign: 'left', padding: '10px 12px', border: 'none', borderRadius: 7, cursor: 'pointer', marginBottom: 6, color: T.fg1 };
+const jobListStyle = { flex: 1, minHeight: 0, overflow: 'auto', padding: '10px 8px' };
+const jobItemStyle = { width: '100%', display: 'block', textAlign: 'left', padding: '10px 12px', border: 'none', borderRadius: 7, cursor: 'pointer', marginBottom: 6, color: T.fg1, outline: 'none' };
+const jobItemHeaderStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 };
+const jobDescriptionStyle = { marginTop: 6, color: T.fg3, fontSize: 11, lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word' };
+const deleteButtonStyle = { ...btnIcon, width: 24, height: 24, color: T.fg4, flexShrink: 0 };
 const tabBarStyle = { padding: '9px 16px', borderBottom: `1px solid ${T.br0}`, display: 'flex', gap: 8, alignItems: 'center' };
 const tabStyle = (active) => ({ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 999, border: `1px solid ${active ? T.br2 : T.br0}`, background: active ? T.bg3 : 'transparent', color: active ? T.fg0 : T.fg3, cursor: 'pointer', fontSize: 11.5 });
 const linkButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 9px', background: T.bg2, border: `1px solid ${T.br1}`, borderRadius: 7, color: T.fg2, textDecoration: 'none', fontSize: 11.5 };
@@ -895,5 +1002,6 @@ const linkButtonPlainStyle = { display: 'inline-flex', alignItems: 'center', gap
 const metricStyle = { background: T.bg2, border: `1px solid ${T.br0}`, borderRadius: 8, padding: 14, minHeight: 90 };
 const codeStyle = { margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.7, color: T.fg1, fontFamily: T.mono, background: T.bg2, border: `1px solid ${T.br0}`, borderRadius: 8, padding: 14 };
 const logLineStyle = { padding: '8px 10px', borderRadius: 7, background: T.bg2, border: `1px solid ${T.br0}`, fontFamily: T.mono, fontSize: 11.5, color: T.fg1 };
+const resultBodyStyle = { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 };
 const thStyle = { position: 'sticky', top: 0, zIndex: 1, background: T.bg2, color: T.fg3, textAlign: 'left', padding: '9px 10px', fontSize: 11, fontFamily: T.mono, whiteSpace: 'nowrap' };
 const tdStyle = { padding: '9px 10px', color: T.fg1, maxWidth: 280, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', verticalAlign: 'top' };

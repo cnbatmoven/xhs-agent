@@ -18,6 +18,7 @@ export const Ico = {
   grid: (p) => <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" {...p}><rect x="2" y="2" width="4" height="4" /><rect x="8" y="2" width="4" height="4" /><rect x="2" y="8" width="4" height="4" /><rect x="8" y="8" width="4" height="4" /></svg>,
   chart: (p) => <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" {...p}><path d="M2 12h10M4 9v3M7 5v7M10 7v5" /></svg>,
   doc: (p) => <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" {...p}><path d="M3 1h6l3 3v9H3z" /><path d="M5 6h4M5 9h4" /></svg>,
+  trash: (p) => <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M2 3.5h10M5.5 3.5V2h3v1.5M4 5l.5 7h5L10 5" /></svg>,
 };
 
 export function Pill({ children, color = T.fg2, bg = T.bg3, br = T.br1 }) {

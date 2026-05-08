@@ -14,7 +14,16 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `HTTP ${response.status}`);
+    let message = text || `HTTP ${response.status}`;
+    try {
+      const payload = JSON.parse(text);
+      message = typeof payload.detail === 'string'
+        ? payload.detail
+        : JSON.stringify(payload.detail || payload, null, 2);
+    } catch {
+      // Keep the raw response text.
+    }
+    throw new Error(message);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -40,6 +49,18 @@ export function createJob(payload) {
   return request('/api/v1/jobs', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export function deleteJob(jobId) {
+  return request(`/api/v1/jobs/${jobId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function clearFinishedJobs() {
+  return request('/api/v1/jobs', {
+    method: 'DELETE',
   });
 }
 

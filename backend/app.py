@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import queue
 import shutil
 import threading
@@ -441,7 +442,25 @@ def prepare_safe_request(req: AnalyzeRequest) -> tuple[AnalyzeRequest, dict[str,
     preview = _usage_tracker.enrich_preview(normalize_for_safety(req.model_dump()))
     if not preview.allowed:
         raise HTTPException(status_code=400, detail=preview.public_dict())
-    return AnalyzeRequest(**preview.normalized), preview.public_dict()
+    safe_req = AnalyzeRequest(**preview.normalized)
+    if safe_req.use_llm and not (
+        safe_req.llm_api_key or os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="启用 LLM 需要先配置 LLM_API_KEY / OPENAI_API_KEY；不需要 LLM 时请关闭“启用 LLM”。",
+        )
+    return safe_req, preview.public_dict()
+
+
+def cleanup_job_files(job_id: str) -> None:
+    log_path = LOG_DIR / f"{job_id}.log"
+    if log_path.exists():
+        log_path.unlink()
+    artifact_dir = (ARTIFACT_DIR / job_id).resolve()
+    artifact_root = ARTIFACT_DIR.resolve()
+    if artifact_dir.exists() and artifact_root in artifact_dir.parents:
+        shutil.rmtree(artifact_dir)
 
 
 def create_job_record(req: AnalyzeRequest) -> JobRecord:
@@ -534,6 +553,7 @@ def health() -> dict[str, Any]:
         "queue_size": _job_queue.qsize(),
         "graph_enabled": run_xhs_analysis_graph is not None,
         "plugins": len(list_plugins()),
+        "llm_configured": bool(os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")),
     }
 
 
@@ -670,6 +690,36 @@ def get_job(job_id: str) -> dict[str, Any]:
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
         return public_job(job)
+
+
+@app.delete("/api/v1/jobs")
+def delete_finished_jobs() -> dict[str, Any]:
+    with _jobs_lock:
+        job_ids = [
+            job_id
+            for job_id, job in _jobs.items()
+            if job.status not in {"queued", "running"}
+        ]
+        for job_id in job_ids:
+            _jobs.pop(job_id, None)
+    save_jobs()
+    for job_id in job_ids:
+        cleanup_job_files(job_id)
+    return {"status": "deleted", "count": len(job_ids), "job_ids": job_ids}
+
+
+@app.delete("/api/v1/jobs/{job_id}")
+def delete_job(job_id: str) -> dict[str, Any]:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="job not found")
+        if job.status in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="running or queued jobs cannot be deleted")
+        _jobs.pop(job_id, None)
+    save_jobs()
+    cleanup_job_files(job_id)
+    return {"status": "deleted", "job_id": job_id}
 
 
 def enqueue_retry_job(job_id: str) -> dict[str, Any]:
