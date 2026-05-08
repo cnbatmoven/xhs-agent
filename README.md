@@ -12,6 +12,12 @@
 
 它兼容部分平台导出的异常 `.xlsx` 文件，例如工作表 `dimension` 错误导致普通 Excel 库只能读到 `A1` 的情况。
 
+如果你是第一次使用，建议先看纯小白教程：
+
+```text
+docs/BEGINNER_GUIDE.md
+```
+
 ## 安装依赖
 
 ```powershell
@@ -232,7 +238,7 @@ outputs/covers/
 启动后端：
 
 ```powershell
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
+uvicorn backend.app:app --host 127.0.0.1 --port 8001
 ```
 
 健康检查：
