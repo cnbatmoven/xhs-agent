@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local env
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+
+# Runtime data and generated artifacts
+data/
+outputs/
+browser-profile/
+chrome-debug-profile/
+vendor/
+
+# Local source workbooks and office temp files
+空调内容分析/
+~$*
+*.tmp
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

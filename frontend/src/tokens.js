@@ -1,0 +1,23 @@
+// Design tokens — warm paper light theme
+export const T = {
+  bg0: '#f7f5f0',
+  bg1: '#fbfaf6',
+  bg2: '#ffffff',
+  bg3: '#f0ede5',
+  bg4: '#e8e4d8',
+  br0: '#e8e4d8',
+  br1: '#d9d4c4',
+  br2: '#bfb9a8',
+  fg0: '#1a1814',
+  fg1: '#3a3530',
+  fg2: '#6b655a',
+  fg3: '#928c80',
+  fg4: '#b8b1a3',
+  red: '#ff2442',
+  redDim: 'rgba(255,36,66,0.10)',
+  ok: '#22c55e',
+  warn: '#eab308',
+  info: '#60a5fa',
+  mono: '"JetBrains Mono", "SF Mono", Menlo, Consolas, monospace',
+  sans: '"PingFang SC", "Helvetica Neue", -apple-system, system-ui, sans-serif',
+};

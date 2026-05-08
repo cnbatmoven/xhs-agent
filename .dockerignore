@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+outputs/
+data/
+browser-profile/
+chrome-debug-profile/
+vendor/
+frontend/node_modules/
+frontend/dist/
+空调内容分析/
+.env
+.env.*
+*.log
