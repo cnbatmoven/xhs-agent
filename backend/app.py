@@ -4,11 +4,12 @@ import csv
 import json
 import os
 import queue
+import re
 import shutil
 import threading
 import traceback
 from dataclasses import asdict, dataclass, field, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -45,6 +46,7 @@ ARTIFACT_DIR = JOB_DIR / "artifacts"
 SAFETY_DIR = DATA_DIR / "safety"
 JOB_STORE = JOB_DIR / "jobs.json"
 OUTPUT_DIR = BASE_DIR / "outputs"
+LOCAL_TZ = timezone(timedelta(hours=8))
 
 for directory in [DATA_DIR, UPLOAD_DIR, JOB_DIR, LOG_DIR, ARTIFACT_DIR, SAFETY_DIR, OUTPUT_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,95 @@ for directory in [DATA_DIR, UPLOAD_DIR, JOB_DIR, LOG_DIR, ARTIFACT_DIR, SAFETY_D
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def local_stamp() -> str:
+    return datetime.now(LOCAL_TZ).strftime("%Y年%m月%d日%H时%M分%S秒")
+
+
+def short_local_time(value: datetime | None = None) -> str:
+    current = value or datetime.now(LOCAL_TZ)
+    return current.astimezone(LOCAL_TZ).strftime("%Y/%m/%d %H:%M")
+
+
+def parse_name_time(value: str) -> str:
+    millisecond_match = re.search(r"_(\d{13})(?:_|$)", value)
+    if millisecond_match:
+        try:
+            moment = datetime.fromtimestamp(int(millisecond_match.group(1)) / 1000, LOCAL_TZ)
+            return short_local_time(moment)
+        except ValueError:
+            pass
+    stamp_match = re.search(r"(\d{8})_(\d{6})", value)
+    if stamp_match:
+        try:
+            moment = datetime.strptime("".join(stamp_match.groups()), "%Y%m%d%H%M%S").replace(tzinfo=LOCAL_TZ)
+            return short_local_time(moment)
+        except ValueError:
+            pass
+    return ""
+
+
+def clean_filename_part(value: str, fallback: str = "小红书笔记分析") -> str:
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(value or ""))
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"_+", "_", text).strip("._ ")
+    return (text[:48] or fallback).strip("._ ")
+
+
+def task_title_from_request(request: dict[str, Any]) -> str:
+    if request.get("retry_base_csv"):
+        description = str(request.get("description") or "").strip()
+        if description and not re.fullmatch(r"retry job for [0-9a-f]{8,}", description):
+            return description
+        return "补抓缺失数据"
+    mode = "离线表格分析" if request.get("no_crawl") else "小红书笔记采集"
+    limit = int(request.get("limit") or 0)
+    row_part = f"前{limit}条" if limit > 0 else "全部笔记"
+    features: list[str] = []
+    if request.get("download_covers") or request.get("embed_covers"):
+        features.append("封面")
+    if not request.get("no_crawl"):
+        features.extend(["评论", "粉丝"])
+    if request.get("crawl_pgy"):
+        features.append("蒲公英报价")
+    if request.get("use_llm"):
+        features.append("创意建议")
+    feature_part = "、".join(dict.fromkeys(features)) or "基础字段"
+    return f"{mode}：{row_part}，补{feature_part}"
+
+
+def output_path_for_request(request: dict[str, Any], suffix: str = "结果") -> Path:
+    title = task_title_from_request(request)
+    stem = f"{clean_filename_part(title)}_{clean_filename_part(suffix, fallback='结果')}_{local_stamp()}"
+    return unique_path(OUTPUT_DIR / f"{stem}.xlsx")
+
+
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}_第{index}次{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"cannot find available filename for {path.name}")
+
+
+def display_result_name(filename: str) -> str:
+    path = Path(filename)
+    stem = path.stem
+    ext = path.suffix.upper().lstrip(".")
+    when = parse_name_time(stem.split("_merged_", 1)[1]) if "_merged_" in stem else parse_name_time(stem)
+    suffix = f"（{when}）" if when else ""
+    if "_merged_" in stem or "补抓合并" in stem:
+        return f"补抓合并结果{suffix}.{ext}"
+    if stem.startswith("retry_input_") or "补抓输入" in stem:
+        return f"补抓输入表{suffix}.{ext}"
+    if stem.startswith("retry_job_") or "补抓缺失数据" in stem:
+        return f"补抓临时结果{suffix}.{ext}"
+    if stem.startswith("frontend_") or stem.startswith("job_"):
+        return f"小红书笔记分析结果{suffix}.{ext}"
+    return filename
 
 
 class AnalyzeRequest(BaseModel):
@@ -101,6 +192,7 @@ class JobRecord:
     created_at: str
     updated_at: str
     request: dict[str, Any]
+    title: str = ""
     output: str = ""
     csv_output: str = ""
     current_step: str = ""
@@ -130,12 +222,21 @@ _usage_tracker = UsageTracker(SAFETY_DIR)
 
 
 def public_job(job: JobRecord) -> dict[str, Any]:
-    return asdict(job)
+    payload = asdict(job)
+    title = job.title or task_title_from_request(job.request)
+    payload["title"] = title
+    payload["display_title"] = title
+    payload["display_id"] = title
+    if job.output:
+        payload["output_display_name"] = display_result_name(Path(job.output).name)
+    if job.csv_output:
+        payload["csv_display_name"] = display_result_name(Path(job.csv_output).name)
+    return payload
 
 
 def save_jobs() -> None:
     with _jobs_lock:
-        payload = [public_job(job) for job in _jobs.values()]
+        payload = [asdict(job) for job in _jobs.values()]
     tmp_path = JOB_STORE.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(JOB_STORE)
@@ -151,6 +252,8 @@ def load_jobs() -> None:
     with _jobs_lock:
         for item in payload:
             job = JobRecord(**item)
+            if not job.title:
+                job.title = task_title_from_request(job.request)
             if job.status in {"running", "queued"}:
                 job.status = "queued"
                 job.updated_at = utc_now_iso()
@@ -468,14 +571,22 @@ def create_job_record(req: AnalyzeRequest) -> JobRecord:
     job_id = uuid4().hex
     now = utc_now_iso()
     request = safe_req.model_dump(exclude={"llm_api_key"})
-    if not request.get("output") or request["output"] == "outputs/xhs_note_analysis.xlsx":
-        request["output"] = str((OUTPUT_DIR / f"job_{job_id}.xlsx").resolve())
+    output_name = Path(str(request.get("output") or "")).name
+    should_make_readable_output = (
+        not request.get("output")
+        or request["output"] == "outputs/xhs_note_analysis.xlsx"
+        or output_name.startswith(("frontend_", "job_"))
+    )
+    if should_make_readable_output:
+        request["output"] = str(output_path_for_request(request).resolve())
+    title = task_title_from_request(request)
     return JobRecord(
         job_id=job_id,
         status="queued",
         created_at=now,
         updated_at=now,
         request=request,
+        title=title,
         safety=safety,
     )
 
@@ -490,6 +601,7 @@ def list_result_files() -> list[dict[str, Any]]:
             {
                 "name": path.name,
                 "path": str(path.resolve()),
+                "display_name": display_result_name(path.name),
                 "size": stat.st_size,
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                 "type": path.suffix.lower().lstrip("."),
@@ -517,11 +629,13 @@ def quality_scan(limit_files: int = 50, preview_limit: int = 10) -> dict[str, An
         reports.append(
             {
                 "name": item["name"],
+                "display_name": item.get("display_name") or display_result_name(item["name"]),
                 "path": csv_path,
                 "modified_at": item["modified_at"],
                 "size": item["size"],
                 "quality": report,
                 "job_id": job.job_id if job else None,
+                "job_title": (job.title or task_title_from_request(job.request)) if job else None,
                 "source_input": job.request.get("input") if job else None,
                 "is_retry_artifact": is_retry_artifact,
                 "can_retry": bool(job and report.get("retry_needed", 0) and not is_retry_artifact),
@@ -631,11 +745,13 @@ def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     suffix = Path(file.filename or "input.xlsx").suffix.lower()
     if suffix not in {".xlsx", ".xls", ".csv"}:
         raise HTTPException(status_code=400, detail="only .xlsx, .xls, .csv files are supported")
-    target = UPLOAD_DIR / f"{uuid4().hex}{suffix}"
+    original_stem = clean_filename_part(Path(file.filename or "原始表格").stem, fallback="原始表格")
+    target = unique_path(UPLOAD_DIR / f"上传原始表_{original_stem}_{local_stamp()}{suffix}")
     with target.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     return {
         "filename": file.filename,
+        "display_name": target.name,
         "path": str(target.resolve()),
         "size": target.stat().st_size,
     }
@@ -660,7 +776,7 @@ def create_job(req: AnalyzeRequest) -> dict[str, Any]:
     if record.safety.get("warnings"):
         append_log(record.job_id, "safety warnings: " + "; ".join(record.safety["warnings"]))
     enqueue_job(record.job_id)
-    return {"job_id": record.job_id, "status": "queued", "safety": record.safety}
+    return {"job_id": record.job_id, "status": "queued", "title": record.title, "safety": record.safety}
 
 
 @app.post("/api/v1/jobs/batch")
@@ -680,7 +796,12 @@ def create_batch(req: BatchRequest) -> dict[str, Any]:
         if safety.get("warnings"):
             append_log(job_id, "safety warnings: " + "; ".join(safety["warnings"]))
         enqueue_job(job_id)
-    return {"job_ids": job_ids, "status": "queued", "count": len(job_ids)}
+    return {
+        "job_ids": job_ids,
+        "titles": [record.title for record in records],
+        "status": "queued",
+        "count": len(job_ids),
+    }
 
 
 @app.get("/api/v1/jobs/{job_id}")
@@ -729,26 +850,27 @@ def enqueue_retry_job(job_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="job not found")
         request = dict(job.request)
         csv_output = job.csv_output
+        source_title = job.title or task_title_from_request(job.request)
     if not csv_output:
         raise HTTPException(status_code=400, detail="job has no csv output yet")
     source_path = request.get("input")
     if not source_path:
         raise HTTPException(status_code=400, detail="job has no source input path")
-    prep = retry_prep_report(Path(source_path), Path(csv_output), OUTPUT_DIR)
+    prep = retry_prep_report(Path(source_path), Path(csv_output), OUTPUT_DIR, output_stem=f"{source_title}_补抓输入表")
     if prep["retry_input_rows"] <= 0:
         return {"status": "no_retry_needed", "job_id": None, "prep": prep}
+    retry_description = f"补抓缺失数据：{source_title}"
+    retry_base_request = {
+        **request,
+        "input": prep["retry_input"],
+        "output": str(output_path_for_request({**request, "description": retry_description, "retry_base_csv": csv_output}, suffix="临时结果").resolve()),
+        "limit": 0,
+        "description": retry_description,
+        "retry_base_csv": csv_output,
+        "retry_merge_output": str(unique_path(OUTPUT_DIR / f"{clean_filename_part(source_title)}_补抓合并结果_{local_stamp()}.xlsx").resolve()),
+    }
     retry_req = AnalyzeRequest(
-        **{
-            **request,
-            "input": prep["retry_input"],
-            "output": str((OUTPUT_DIR / f"retry_job_{uuid4().hex}.xlsx").resolve()),
-            "limit": 0,
-            "description": f"retry job for {job_id}",
-            "retry_base_csv": csv_output,
-            "retry_merge_output": str(
-                (OUTPUT_DIR / f"{Path(csv_output).stem}_merged_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx").resolve()
-            ),
-        }
+        **retry_base_request
     )
     record = create_job_record(retry_req)
     with _jobs_lock:

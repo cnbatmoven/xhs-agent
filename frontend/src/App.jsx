@@ -80,11 +80,50 @@ function normalizeError(error) {
   return String(error);
 }
 
-function buildPayload(work) {
-  const outputName = `frontend_${Date.now()}.xlsx`;
+function taskTitleFromConfig(config = {}) {
+  if (config.retry_base_csv) return config.description || '补抓缺失数据';
+  const mode = config.no_crawl ? '离线表格分析' : '小红书笔记采集';
+  const limit = Number(config.limit || 0);
+  const rows = limit > 0 ? `前${limit}条` : '全部笔记';
+  const features = [];
+  if (config.download_covers || config.embed_covers) features.push('封面');
+  if (!config.no_crawl) features.push('评论', '粉丝');
+  if (config.crawl_pgy) features.push('蒲公英报价');
+  if (config.use_llm) features.push('创意建议');
+  return `${mode}：${rows}，补${[...new Set(features)].join('、') || '基础字段'}`;
+}
+
+function safeFilenamePart(value) {
+  const cleaned = String(value || '小红书笔记分析')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^[._ ]+|[._ ]+$/g, '');
+  return (cleaned || '小红书笔记分析').slice(0, 48);
+}
+
+function localStamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}年${pad(date.getMonth() + 1)}月${pad(date.getDate())}日${pad(date.getHours())}时${pad(date.getMinutes())}分${pad(date.getSeconds())}秒`;
+}
+
+function buildOutputPath(work, suffix = '结果') {
+  return `D:/xhs/outputs/${safeFilenamePart(taskTitleFromConfig(work))}_${safeFilenamePart(suffix)}_${localStamp()}.xlsx`;
+}
+
+function displayJobTitle(job) {
+  if (!job) return '结果预览';
+  return job.display_title || job.title || taskTitleFromConfig(job.request || {}) || '小红书笔记分析';
+}
+
+function displayFileName(file) {
+  return file?.display_name || file?.name || '--';
+}
+
+function buildPayload(work, outputSuffix = '结果') {
   return {
     input: work.input,
-    output: `D:/xhs/outputs/${outputName}`,
+    output: buildOutputPath(work, outputSuffix),
     description: work.description,
     limit: Number(work.limit || 0),
     cdp_url: work.cdp_url || null,
@@ -279,7 +318,8 @@ export default function App() {
     setError('');
     try {
       const first = buildPayload(work);
-      const second = { ...buildPayload(work), output: `D:/xhs/outputs/frontend_${Date.now()}_pgy.xlsx`, crawl_pgy: true, pgy_safe_mode: true };
+      const pgyWork = { ...work, crawl_pgy: true, pgy_safe_mode: true };
+      const second = { ...buildPayload(pgyWork, '蒲公英报价结果'), crawl_pgy: true, pgy_safe_mode: true };
       const created = await createBatch([first, second]);
       setActiveJobId(created.job_ids[0]);
       setJobs(await listJobs());
@@ -453,8 +493,8 @@ export default function App() {
           <div style={labelStyle}>结果文件</div>
           <div style={{ marginTop: 8, maxHeight: 130, overflow: 'auto' }}>
             {files.slice(0, 8).map((file) => (
-              <a key={file.path} href={fileUrl(file.path)} style={fileLinkStyle}>
-                <span>{file.name}</span>
+              <a key={file.path} href={fileUrl(file.path)} style={fileLinkStyle} title={file.name}>
+                <span style={fileNameTextStyle}>{displayFileName(file)}</span>
                 <span style={{ color: T.fg4 }}>{file.type}</span>
               </a>
             ))}
@@ -607,7 +647,7 @@ export default function App() {
         <header style={mainHeaderStyle}>
           <div>
             <div style={labelStyle}>result</div>
-            <div style={titleStyle}>{activeJob ? `任务 ${activeJob.job_id.slice(0, 8)}` : '结果预览'}</div>
+            <div style={titleStyle}>{activeJob ? displayJobTitle(activeJob) : '结果预览'}</div>
             {activeJob?.current_step && <div style={{ marginTop: 5, color: T.fg4, fontSize: 11, fontFamily: T.mono }}>step: {activeJob.current_step}</div>}
           </div>
           {activeJob && <Pill color={tone.color} bg={tone.bg} br={tone.br}><Dot color={tone.color} />{activeJob.status}</Pill>}
@@ -675,7 +715,7 @@ function JobItem({ job, active, onClick, onDelete }) {
     >
       <div style={jobItemHeaderStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-          <strong style={{ fontSize: 12 }}>{job.job_id.slice(0, 8)}</strong>
+          <strong style={jobTitleTextStyle}>{displayJobTitle(job)}</strong>
           <Pill color={tone.color} bg={tone.bg} br={tone.br}>{job.status}</Pill>
         </div>
         {canDelete && (
@@ -893,6 +933,7 @@ function QualityScanView({ scan, onOpenJob, onRetry, onRetryAll, busy, retryPrep
         {files.map((item) => {
           const score = Number(item?.quality?.score ?? 0);
           const retryNeeded = Number(item?.quality?.retry_needed ?? 0);
+          const itemTitle = displayFileName(item);
           const missingSummary = Object.entries(item?.quality?.missing || {})
             .filter(([, value]) => Number(value) > 0)
             .slice(0, 4)
@@ -903,12 +944,12 @@ function QualityScanView({ scan, onOpenJob, onRetry, onRetryAll, busy, retryPrep
             <div key={item.path} style={scanCardStyle}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 650, color: T.fg0, wordBreak: 'break-all' }}>{item.name}</div>
+                  <div style={{ fontSize: 13, fontWeight: 650, color: T.fg0, wordBreak: 'break-word' }} title={item.name}>{itemTitle}</div>
                   <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     <Pill color={scoreTone} bg={T.bg3} br={T.br1}>score <Num>{score}%</Num></Pill>
                     <Pill color={T.fg1} bg={T.bg3} br={T.br1}>rows <Num>{item?.quality?.rows ?? 0}</Num></Pill>
                     <Pill color={retryNeeded ? T.warn : T.ok} bg={T.bg3} br={T.br1}>retry <Num>{retryNeeded}</Num></Pill>
-                    {item.job_id && <Pill color={T.fg1} bg={T.bg3} br={T.br1}>job {item.job_id.slice(0, 8)}</Pill>}
+                    {item.job_title && <Pill color={T.fg1} bg={T.bg3} br={T.br1}>来源任务</Pill>}
                   </div>
                   <div style={{ marginTop: 8, color: T.fg3, fontSize: 11.5, lineHeight: 1.6 }}>
                     {missingSummary || '当前文件没有缺失字段'}
@@ -990,12 +1031,14 @@ const modeButtonStyle = (active) => ({ padding: '9px 10px', background: active ?
 const errorStyle = { padding: '10px 12px', borderRadius: 8, background: 'rgba(220,38,38,0.06)', border: '1px solid rgba(220,38,38,0.16)', color: '#b91c1c', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap' };
 const miniNoticeStyle = { padding: '7px 9px', borderRadius: 7, background: T.bg3, border: `1px solid ${T.br0}`, color: T.fg2, fontSize: 11.5, lineHeight: 1.45 };
 const fileLinkStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, padding: '5px 0', color: T.fg2, textDecoration: 'none', fontSize: 11, borderTop: `1px solid ${T.br0}` };
+const fileNameTextStyle = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
 const pluginLineStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, padding: '5px 0', color: T.fg2, fontSize: 11, borderTop: `1px solid ${T.br0}` };
 const retryRowStyle = { padding: '9px 10px', borderRadius: 7, background: T.bg3, border: `1px solid ${T.br0}` };
 const scanCardStyle = { background: T.bg2, border: `1px solid ${T.br0}`, borderRadius: 8, padding: 14 };
 const jobListStyle = { flex: 1, minHeight: 0, overflow: 'auto', padding: '10px 8px' };
 const jobItemStyle = { width: '100%', display: 'block', textAlign: 'left', padding: '10px 12px', border: 'none', borderRadius: 7, cursor: 'pointer', marginBottom: 6, color: T.fg1, outline: 'none' };
 const jobItemHeaderStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 };
+const jobTitleTextStyle = { fontSize: 12, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
 const jobDescriptionStyle = { marginTop: 6, color: T.fg3, fontSize: 11, lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word' };
 const deleteButtonStyle = { ...btnIcon, width: 24, height: 24, color: T.fg4, flexShrink: 0 };
 const tabBarStyle = { padding: '9px 16px', borderBottom: `1px solid ${T.br0}`, display: 'flex', gap: 8, alignItems: 'center' };

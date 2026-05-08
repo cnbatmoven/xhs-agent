@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -148,12 +149,14 @@ def retry_prep_report(
     result_csv_path: Path,
     output_dir: Path,
     required_columns: list[str] | None = None,
+    output_stem: str | None = None,
 ) -> dict[str, Any]:
     required = required_columns or QUALITY_REQUIRED_COLUMNS
     _, base_rows = read_result_csv(result_csv_path)
     retry_candidates = select_retry_rows(base_rows, required)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    retry_input = output_dir / f"retry_input_{stamp}.xlsx"
+    stamp = datetime.now().strftime("%Y年%m月%d日%H时%M分%S秒")
+    stem = safe_filename_part(output_stem or "补抓输入表")
+    retry_input = unique_path(output_dir / f"{stem}_{stamp}.xlsx")
     retry_count = build_retry_workbook(source_path, retry_candidates, retry_input)
     return {
         "source": str(source_path.resolve()),
@@ -163,6 +166,23 @@ def retry_prep_report(
         "retry_input_rows": retry_count,
         "retry_input": str(retry_input.resolve()),
     }
+
+
+def safe_filename_part(value: str) -> str:
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(value or ""))
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"_+", "_", text).strip("._ ")
+    return text[:60] or "补抓输入表"
+
+
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}_第{index}次{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"cannot find available filename for {path.name}")
 
 
 def merge_rows(
