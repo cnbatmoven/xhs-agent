@@ -26,7 +26,7 @@ const defaultWork = {
   input: '',
   description: '抓取这张表前50条笔记，补充标题、封面、文案、话题、互动数据、评论和粉丝量。',
   limit: 50,
-  cdp_url: 'http://127.0.0.1:9222',
+  cdp_url: import.meta.env.VITE_DEFAULT_CDP_URL || 'http://127.0.0.1:9222',
   crawl_delay: 8,
   download_covers: true,
   embed_covers: true,
@@ -177,6 +177,13 @@ export default function App() {
         setHealth(healthData);
         if (healthData.llm_configured === false) {
           setWork((current) => (current.use_llm ? { ...current, use_llm: false } : current));
+        }
+        if (healthData.default_cdp_url) {
+          setWork((current) => (
+            current.cdp_url && current.cdp_url !== defaultWork.cdp_url
+              ? current
+              : { ...current, cdp_url: healthData.default_cdp_url }
+          ));
         }
         setJobs(jobData);
         setFiles(fileData);

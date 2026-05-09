@@ -18,6 +18,7 @@ from uuid import uuid4
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.plugins import get_plugin, list_plugins
@@ -46,6 +47,7 @@ ARTIFACT_DIR = JOB_DIR / "artifacts"
 SAFETY_DIR = DATA_DIR / "safety"
 JOB_STORE = JOB_DIR / "jobs.json"
 OUTPUT_DIR = BASE_DIR / "outputs"
+FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 LOCAL_TZ = timezone(timedelta(hours=8))
 
 for directory in [DATA_DIR, UPLOAD_DIR, JOB_DIR, LOG_DIR, ARTIFACT_DIR, SAFETY_DIR, OUTPUT_DIR]:
@@ -668,6 +670,7 @@ def health() -> dict[str, Any]:
         "graph_enabled": run_xhs_analysis_graph is not None,
         "plugins": len(list_plugins()),
         "llm_configured": bool(os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")),
+        "default_cdp_url": os.getenv("DEFAULT_CDP_URL", ""),
     }
 
 
@@ -1026,3 +1029,7 @@ def run_sync(req: AnalyzeRequest) -> dict[str, Any]:
         "summary": summary,
         "preview": csv_preview(Path(csv_output), limit=50),
     }
+
+
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

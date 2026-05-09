@@ -234,6 +234,7 @@ outputs/covers/
 
 - `CLI`：继续直接运行 `xhs_note_agent.py`
 - `HTTP API`：运行 FastAPI 后端，对外提供同步执行和后台任务接口
+- `Docker`：直接拉取镜像运行，详见 [docs/Docker部署.md](docs/Docker部署.md)
 
 启动后端：
 
